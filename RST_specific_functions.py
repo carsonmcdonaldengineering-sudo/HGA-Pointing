@@ -28,6 +28,7 @@ class ObservatoryAttitude:
     yaw: float = 0.0
     pitch: float = 0.0
     roll: float = 0.0
+    time: float | None = None
 
     @classmethod
     def from_input(cls, attitude: Sequence[float] | 'ObservatoryAttitude') -> 'ObservatoryAttitude':
@@ -39,13 +40,17 @@ class ObservatoryAttitude:
         if len(attitude) == 3:
             yaw, pitch, roll = attitude
             return cls(yaw=yaw, pitch=pitch, roll=roll)
-        raise ValueError('Attitude must be an ObservatoryAttitude or a sequence of length 2 or 3.')
+        if len(attitude) == 4:
+            yaw, pitch, roll, time = attitude
+            return cls(yaw=yaw, pitch=pitch, roll=roll, time=time)
+        raise ValueError('Attitude must be an ObservatoryAttitude or a sequence of length 2, 3, or 4.')
 
     def as_tuple(self):
         return self.yaw, self.pitch, self.roll
 
     def label(self):
-        return f'Yaw {self.yaw} Pitch {self.pitch} Roll {self.roll}'
+        base = f'Yaw {self.yaw} Pitch {self.pitch} Roll {self.roll}'
+        return f'{base} Time {self.time}' if self.time is not None else base
 
 
 @dataclass(frozen=True)
@@ -55,8 +60,6 @@ class GimbalAngles:
 
     def as_tuple(self):
         return self.y_track, self.x_track
-
-
 
 
 @dataclass(frozen=True)
@@ -152,21 +155,13 @@ class RomanHGAPointingModel:
         roll_symbol='STOP_obs_roll',
         value_format='.9g',
     ):
-        axis_lookup = {
-            'x': 'x_track',
-            'x_track': 'x_track',
-            'y': 'y_track',
-            'y_track': 'y_track',
-        }
-        axis_name = axis_lookup.get(axis)
-        if axis_name is None:
-            raise ValueError("axis must be one of 'x', 'x_track', 'y', or 'y_track'.")
+        axis_name = _resolve_axis_name(axis)
 
         lines = []
         for result in results:
             attitude = ObservatoryAttitude.from_input(result.attitude)
             if attitude.yaw != 0:
-                raise ValueError('Thermal Desktop export currently supports only yaw = 0 attitude tables.')
+                raise ValueError('Pitch/roll Thermal Desktop export currently supports only yaw = 0 attitude tables.')
 
             value = getattr(result.gimbal_angles, axis_name)
             lines.append(
@@ -200,6 +195,92 @@ class RomanHGAPointingModel:
             ),
         )
 
+    def format_thermal_desktop_time_table(
+        self,
+        results,
+        axis='x',
+        time_symbol='hrTime',
+        start_time=None,
+        value_format='.9g',
+        time_format='.0f',
+        final_else='0',
+    ):
+        if not results:
+            return str(final_else)
+
+        axis_name = _resolve_axis_name(axis)
+        first_attitude = ObservatoryAttitude.from_input(results[0].attitude)
+        if first_attitude.time is None:
+            raise ValueError('Time-based Thermal Desktop export requires attitudes that include time values.')
+
+        threshold_time = first_attitude.time if start_time is None else start_time
+        first_value = getattr(results[0].gimbal_angles, axis_name)
+        lines = [f'({time_symbol}< {format(threshold_time, time_format)})? {format(first_value, value_format)} :']
+
+        for result in results:
+            attitude = ObservatoryAttitude.from_input(result.attitude)
+            if attitude.time is None:
+                raise ValueError('Time-based Thermal Desktop export requires attitudes that include time values.')
+
+            value = getattr(result.gimbal_angles, axis_name)
+            lines.append(f'({time_symbol} >= {format(attitude.time, time_format)})? {format(value, value_format)} :')
+
+        lines.append(str(final_else))
+        return '\n'.join(lines)
+
+    def format_thermal_desktop_time_gimbal_exports(
+        self,
+        results,
+        time_symbol='hrTime',
+        start_time=None,
+        value_format='.9g',
+        time_format='.0f',
+        final_else='0',
+    ):
+        return ThermalDesktopExports(
+            x_track=self.format_thermal_desktop_time_table(
+                results,
+                axis='x',
+                time_symbol=time_symbol,
+                start_time=start_time,
+                value_format=value_format,
+                time_format=time_format,
+                final_else=final_else,
+            ),
+            y_track=self.format_thermal_desktop_time_table(
+                results,
+                axis='y',
+                time_symbol=time_symbol,
+                start_time=start_time,
+                value_format=value_format,
+                time_format=time_format,
+                final_else=final_else,
+            ),
+        )
+
+
+def _resolve_axis_name(axis):
+    axis_lookup = {
+        'x': 'x_track',
+        'x_track': 'x_track',
+        'y': 'y_track',
+        'y_track': 'y_track',
+    }
+    axis_name = axis_lookup.get(axis)
+    if axis_name is None:
+        raise ValueError("axis must be one of 'x', 'x_track', 'y', or 'y_track'.")
+    return axis_name
+
+
+def parse_os11_attitudes(raw_text):
+    attitudes = []
+    for line in raw_text.strip().splitlines():
+        if not line.strip():
+            continue
+        yaw, pitch, roll, time = [float(value.strip()) for value in line.split(',')]
+        attitudes.append(ObservatoryAttitude(yaw=yaw, pitch=pitch, roll=roll, time=time))
+    return attitudes
+
 
 def rotate_HGA(HGA_inputs, HGA_initial_config=HGA_initial_configuration):
     return RomanHGAPointingModel(hga_initial_config=HGA_initial_config).rotate_hga(HGA_inputs, HGA_initial_config)
@@ -221,6 +302,7 @@ __all__ = [
     'SolveResult',
     'ThermalDesktopExports',
     'define_target',
+    'parse_os11_attitudes',
     'rotate_HGA',
     'rotate_HGA_coordinates_within_OBS',
 ]
