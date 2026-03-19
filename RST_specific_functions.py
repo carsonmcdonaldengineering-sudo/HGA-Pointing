@@ -57,6 +57,14 @@ class GimbalAngles:
         return self.y_track, self.x_track
 
 
+
+
+@dataclass(frozen=True)
+class ThermalDesktopExports:
+    x_track: str
+    y_track: str
+
+
 @dataclass
 class SolveResult:
     attitude: ObservatoryAttitude
@@ -136,6 +144,62 @@ class RomanHGAPointingModel:
     def solve_across_attitudes(self, target_vector, attitudes: Iterable[Sequence[float]], initial_guess=(0, 0)):
         return [self.solve_gimbal_inputs(attitude, target_vector, initial_guess) for attitude in attitudes]
 
+    def format_thermal_desktop_table(
+        self,
+        results,
+        axis='x',
+        pitch_symbol='STOP_obs_pitch',
+        roll_symbol='STOP_obs_roll',
+        value_format='.9g',
+    ):
+        axis_lookup = {
+            'x': 'x_track',
+            'x_track': 'x_track',
+            'y': 'y_track',
+            'y_track': 'y_track',
+        }
+        axis_name = axis_lookup.get(axis)
+        if axis_name is None:
+            raise ValueError("axis must be one of 'x', 'x_track', 'y', or 'y_track'.")
+
+        lines = []
+        for result in results:
+            attitude = ObservatoryAttitude.from_input(result.attitude)
+            if attitude.yaw != 0:
+                raise ValueError('Thermal Desktop export currently supports only yaw = 0 attitude tables.')
+
+            value = getattr(result.gimbal_angles, axis_name)
+            lines.append(
+                f'(({pitch_symbol}== {attitude.pitch:g}) && ({roll_symbol}== {attitude.roll:g})) ?    {format(value, value_format)}:'
+            )
+
+        lines.append('0')
+        return '\n'.join(lines)
+
+    def format_thermal_desktop_gimbal_exports(
+        self,
+        results,
+        pitch_symbol='STOP_obs_pitch',
+        roll_symbol='STOP_obs_roll',
+        value_format='.9g',
+    ):
+        return ThermalDesktopExports(
+            x_track=self.format_thermal_desktop_table(
+                results,
+                axis='x',
+                pitch_symbol=pitch_symbol,
+                roll_symbol=roll_symbol,
+                value_format=value_format,
+            ),
+            y_track=self.format_thermal_desktop_table(
+                results,
+                axis='y',
+                pitch_symbol=pitch_symbol,
+                roll_symbol=roll_symbol,
+                value_format=value_format,
+            ),
+        )
+
 
 def rotate_HGA(HGA_inputs, HGA_initial_config=HGA_initial_configuration):
     return RomanHGAPointingModel(hga_initial_config=HGA_initial_config).rotate_hga(HGA_inputs, HGA_initial_config)
@@ -155,6 +219,7 @@ __all__ = [
     'ObservatoryAttitude',
     'RomanHGAPointingModel',
     'SolveResult',
+    'ThermalDesktopExports',
     'define_target',
     'rotate_HGA',
     'rotate_HGA_coordinates_within_OBS',
